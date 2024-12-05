@@ -5,10 +5,12 @@ from airflow.providers.amazon.aws.operators.glue import GlueJobOperator
 from datetime import timedelta
 import boto3
 from betflow.historical.config import ProcessingConfig
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 import os
+# from airflow.providers.amazon.aws.sensors.s3 import S3KeySensor
 
-load_dotenv("my.env")
+
+load_dotenv(find_dotenv("my.env"), override=True)
 
 default_args = {
     "owner": ProcessingConfig.OWNER,
@@ -60,7 +62,6 @@ def create_or_update_glue_job(sport: str):
                 "PythonVersion": "3",
             },
             "DefaultArguments": {
-                # "--additional-python-modules": "git+https://github.com/yourusername/betflow.git",
                 "--enable-continuous-cloudwatch-log": "true",
                 "--enable-glue-datacatalog": "true",
                 "--enable-metrics": "true",
@@ -92,8 +93,9 @@ for sport, config in ProcessingConfig.SPORT_CONFIGS.items():
             "start_date": config["start_date"],
             "tags": ProcessingConfig.TAGS[f"{sport}_games"],
         },
-        description=f"Process {sport.upper()} games data into Iceberg tables",
+        description=f"Process historical {sport.upper()} games data into Iceberg tables",
         schedule_interval="@daily",
+        # schedule_interval="5 0 * * *",
         catchup=True,
         # max_active_runs=3,
     ) as dag:
