@@ -5,8 +5,11 @@ from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
+<<<<<<< HEAD
 from pyspark.sql.functions import explode
 from betflow.historical.config import ProcessingConfig
+=======
+>>>>>>> main
 from pyspark.sql import SparkSession
 
 
@@ -25,7 +28,10 @@ args = getResolvedOptions(
 sc = SparkContext()
 glueContext = GlueContext(sc)
 
+<<<<<<< HEAD
 # spark = glueContext.spark_session
+=======
+>>>>>>> main
 spark = (
     SparkSession.builder.config(
         "spark.sql.extensions",
@@ -44,15 +50,20 @@ job.init(args["JOB_NAME"], args)
 
 
 # Create database if not exists
-spark.sql(
-    f"CREATE DATABASE IF NOT EXISTS glue_catalog.{ProcessingConfig.GLUE_DB['db_name']}"
-)
+spark.sql(f"CREATE DATABASE IF NOT EXISTS glue_catalog.{args['database_name']}")
+
+# spark.sql(
+#     f"DROP TABLE IF EXISTS glue_catalog.{ProcessingConfig.GLUE_DB['db_name']}.{ProcessingConfig.GLUE_DB['nba_games_table']}"
+# )
 
 # Create table with proper schema
 spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS glue_catalog.{ProcessingConfig.GLUE_DB['db_name']}.{ProcessingConfig.GLUE_DB['nba_games_table']} (
+    CREATE TABLE IF NOT EXISTS glue_catalog.{args['database_name']}.{args['table_name']} (
         game_id STRING,
         start_time TIMESTAMP,
+        partition_year INT,
+        partition_month INT,
+        partition_day INT,
         status_state STRING,
         status_detail STRING,
         status_description STRING,
@@ -89,21 +100,27 @@ spark.sql(f"""
         ingestion_timestamp TIMESTAMP
     )
     USING iceberg
-    PARTITIONED BY (year(start_time), month(start_time), day(start_time))
+    PARTITIONED BY (partition_year, partition_month, partition_day)
 """)
 
 
-# Read and process data
 raw_path = f"{args['source_path']}{args['date']}/games.json"
-df = spark.read.json(raw_path)
-games_df = df.select(explode("_1").alias("game"))
-games_df.createOrReplaceTempView("raw_games")
+try:
+    df = spark.read.json(raw_path)
+    if df.count() == 0:
+        print(f"No games found for date: {args['date']}")
+        job.commit()
+        sys.exit(0)
+    df.createOrReplaceTempView("raw_games")
 
-# Your existing transformation SQL
-processed_df = spark.sql("""
-    SELECT 
+    # Modify the transformation SQL to include partition columns
+    processed_df = spark.sql("""
+        SELECT 
             game_id,
             CAST(start_time as timestamp) as start_time,
+            CAST(YEAR(TO_TIMESTAMP(start_time, "yyyy-MM-dd'T'HH:mm'Z'")) as INT) as partition_year,
+            CAST(MONTH(TO_TIMESTAMP(start_time, "yyyy-MM-dd'T'HH:mm'Z'")) as INT) as partition_month,
+            CAST(DAY(TO_TIMESTAMP(start_time, "yyyy-MM-dd'T'HH:mm'Z'")) as INT) as partition_day,
             status_state,
             status_detail,
             status_description,
@@ -137,14 +154,31 @@ processed_df = spark.sql("""
                 venue_state as state
             ) as venue,
             broadcasts,
-            from_unixtime(CAST(timestamp as long)) as ingestion_timestamp
+            CAST(TIMESTAMP_SECONDS(CAST(timestamp as LONG)) as TIMESTAMP) as ingestion_timestamp
         FROM raw_games
         WHERE status_state = 'post'
-""")
+    """)
 
-# Write to Iceberg table
-processed_df.writeTo(
-    f"glue_catalog.{args['database_name']}.{args['table_name']}"
-).option("merge-schema", "true").append()
+    # # Add before writing
+    # print("Partition Values:")
+    # processed_df.select("partition_year", "partition_month", "partition_day").show()
+    # processed_df.printSchema()
+    if processed_df.count() > 0:
+        (
+            processed_df.writeTo(
+                f"glue_catalog.{args['database_name']}.{args['table_name']}"
+            )
+            .tableProperty("format-version", "2")
+            .option("check-nullability", "false")
+            .option("merge-schema", "true")
+            .tableProperty("write.format.default", "parquet")
+            .partitionedBy("partition_year", "partition_month", "partition_day")
+            .append()
+        )
+    job.commit()
 
-job.commit()
+except Exception as e:
+    if "no such file or directory" in str(e).lower():
+        print(f"No data file found for date: {args['date']}")
+        job.commit()
+        sys.exit(0)
