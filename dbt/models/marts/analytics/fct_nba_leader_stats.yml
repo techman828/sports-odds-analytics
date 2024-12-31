@@ -1,80 +1,73 @@
--- models/marts/analytics/mart_nba_leader_stats.sql
-{{ config(
-    materialized='incremental',
-    unique_key=['game_id', 'player_name', 'leader_type'],
-    schema='analytics',
-    incremental_strategy='merge',
-    cluster_by=['partition_year', 'partition_month', 'partition_day']
-) }}
+version: 2
 
-with leader_metrics as (
-    select
-        game_id,
-        player_name,
-        team_id,
-        leader_type,
-        stat_value,
-        -- Running Stats
-        avg(stat_value) over (
-            partition by player_name, leader_type
-            order by game_id
-            rows between unbounded preceding and current row
-        ) as avg_stat_value,
+models:
+  - name: mart_nba_leader_stats
+    description: Analytics for NBA player leadership statistics
+    tests:
+      - unique:
+          column_name: "game_id || '-' || player_name || '-' || leader_type"
+      - not_null:
+          column_name: game_id
+    columns:
+      - name: player_name
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_match_regex:
+              regex: '^[A-Za-z\s\.-]+$'
 
-        max(stat_value) over (
-            partition by player_name, leader_type
-            order by game_id
-            rows between unbounded preceding and current row
-        ) as season_high,
+      - name: leader_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['POINTS', 'REBOUNDS', 'ASSISTS', 'RATING']
 
-        -- Last 5 Games Average
-        avg(stat_value) over (
-            partition by player_name, leader_type
-            order by game_id
-            rows between 4 preceding and current row
-        ) as last_5_games_avg,
+      - name: stat_value
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 100
 
-        -- Consistency Metrics
-        count(*) over (
-            partition by player_name, leader_type
-            order by game_id
-            rows between unbounded preceding and current row
-        ) as games_as_leader,
+      - name: avg_stat_value
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 50
 
-        -- Performance Thresholds
-        case
-            when leader_type = 'POINTS' and stat_value >= 30 then 1
-            when leader_type = 'REBOUNDS' and stat_value >= 15 then 1
-            when leader_type = 'ASSISTS' and stat_value >= 10 then 1
-            else 0
-        end as exceptional_performance,
+      - name: season_high
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 100
 
-        partition_year,
-        partition_month,
-        partition_day,
-        ingestion_timestamp
-    from {{ ref('int_nba_leader_stats') }}
-),
+      - name: last_5_games_avg
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 50
 
-aggregated_stats as (
-    select
-        *,
-        -- Achievement Tracking
-        sum(exceptional_performance) over (
-            partition by player_name, leader_type
-            order by game_id
-            rows between unbounded preceding and current row
-        ) as total_exceptional_games,
+      - name: games_as_leader
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 1
+              max_value: 82
 
-        -- Percentile Ranking
-        percent_rank() over (
-            partition by leader_type
-            order by stat_value
-        ) as performance_percentile
-    from leader_metrics
-)
+      # Custom tests for stat-specific validation
+      - name: stat_validation
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "
+                (leader_type = 'POINTS' and stat_value <= 100) or
+                (leader_type = 'REBOUNDS' and stat_value <= 40) or
+                (leader_type = 'ASSISTS' and stat_value <= 30) or
+                (leader_type = 'RATING' and stat_value <= 50)"
 
-select * from aggregated_stats
-{% if is_incremental() %}
-where ingestion_timestamp > (select max(ingestion_timestamp) from {{ this }})
-{% endif %}
+      - name: performance_metrics
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "avg_stat_value <= season_high"
+          - dbt_utils.expression_is_true:
+              expression: "exceptional_performance in (0, 1)"
