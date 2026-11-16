@@ -1,309 +1,253 @@
-# Betflow: Real-time Sports Betting Analytics Platform
+# Betflow: Sports Odds Analytics
 
----
+Betflow is a Python data engineering project for collecting and analyzing sports games, betting odds, and venue weather. It combines live Kafka and Spark pipelines with historical ingestion, AWS Glue processing, and Snowflake/dbt analytics for the NBA, NFL, NHL, and college football.
 
-Betflow is a modern data and analytics engineering platform designed for real-time sports betting analytics, combining streaming and batch processing capabilities to provide comprehensive insights for sports betting decisions.
+The repository contains pipeline code, Airflow DAGs, warehouse SQL, dbt models, Druid ingestion specifications, and Grafana queries. Running the complete platform requires separately configured services and cloud resources.
 
-> Note:
-> 1. This project in any capacity **does not endorse or encourage gambling**. The
-> goal of this project is to learn and apply Data Engineering and Analytics
-> Engineering concepts and understand open-source tech stack. The purpose of this 
-> project is to simply offer data-as-a-product for analyzing transient data at huge scale.
-> 
-> 2. UI or dashboards are not publicly available for two big reasons: 
->    1. It may raise legal concerns for me as there is an analysis pointing towards arbitrage.
->    2. Current architecture requires EC2 instance to
->    keep running and hitting APIs at high rate, which is very expensive for me as I am 
->    paying for everything by myself.  
-> 
-> If you are curious to see how dashboards look like, feel free to checkout the below two links for video explanation. 
-> For recruiters, for hiring purposes, please email me that you want to see UI, it takes just 5 minutes to get 
-> the pipeline running, I will share the link with you. 
-> 
-> 1. [Zach Wilson's Capstone Showcase](https://youtu.be/XD2b8V_RfFc?t=1493)  
-> 2. [Data Engineering DC meetup](https://www.youtube.com/watch?v=aaCbpYvjolk&ab_channel=SanchitVijay)
-> 
+## Capabilities
 
-### Key Features
-- Real-time odds movement tracking and analysis  
-- Live game statistics processing
-- Weather impact correlation
-- Historical pattern recognition
-- Market efficiency metrics
-- Multi-source data integration
-- Automated data quality checks
-- Custom analytics dashboards
+- **Live games:** Fetch ESPN scoreboard data and process league-specific game statistics with Spark Structured Streaming.
+- **Betting odds:** Collect data from The Odds API and calculate odds ranges, volatility, implied probabilities, and bookmaker comparisons.
+- **Venue weather:** Collect OpenWeather data for outdoor NFL and college football games.
+- **Historical processing:** Orchestrate game and odds ingestion, data quality checks, and S3 uploads with Airflow; transform historical data with AWS Glue and Apache Iceberg.
+- **Warehouse analytics:** Build Snowflake staging, intermediate, and mart models with dbt, including team trends, player leaders, scoring patterns, overtime, market efficiency, and odds movement.
+- **Visualization:** Query live analytics through Druid and use the included SQL and screenshots as references for Grafana dashboards.
 
-The platform processes both streaming data for immediate insights and historical data for pattern analysis, providing a complete solution for sports betting analytics.
+News connectors and transformation/processing modules are also included, but there is no standalone news pipeline entry point in `src/pipeline_mains/`.
 
-> For usage check [this](usage.md)  
-> For working and screenshots check [this](demo.md)
+## Architecture
 
-# Architecture
-## 1. Real-time pipeline
 ```mermaid
-%%{init: {
-  'theme': 'base',
-  'themeVariables': {
-    'fontSize': '16px',
-    'fontWeight': 'bold',
-    'primaryTextColor': '#000000',
-    'primaryColor': '#e1f5fe',
-    'primaryBorderColor': '#01579b',
-    'fontFamily': 'arial'
-  }
-}}%%
-graph LR
-    classDef ingestion fill:#e6f3ff,stroke:#3498db
-    classDef processing fill:#e6ffe6,stroke:#2ecc71
-    classDef storage fill:#fff0e6,stroke:#e67e22
-    classDef analytics fill:#ffe6e6,stroke:#e74c3c
-    classDef monitoring fill:#f0e6ff,stroke:#9b59b6
+flowchart LR
+    ESPN[ESPN] --> Live[Live Python connectors]
+    Odds[The Odds API] --> Live
+    Weather[OpenWeather] --> Live
+    Live --> Raw[Kafka input topics]
+    Raw --> Spark[Spark Structured Streaming]
+    Spark --> Analytics[Kafka analytics topics]
+    Analytics --> Druid[Apache Druid]
+    Druid --> Grafana[Grafana]
+    Analytics -. optional Kafka Connect S3 sink .-> S3Live[S3 live archive]
 
-    %% Real-time Pipeline
-    A[Real-time APIs] -->|Stream| B[Kafka]
-    B -->|Process| C[Spark Streaming]
-    B -->|Backup| D[raw-s3/topics]
-    C -->|Real-time Analytics| E[Apache Druid]
-    E -->|Live Dashboard| F[Grafana RT]
-    E -->|Archive| G[hist-s3/druid/segments]
-
-    A & B:::ingestion
-    C:::processing
-    D & G:::storage
-    E:::analytics
-    F:::monitoring
+    APIs[Historical game and odds APIs] --> Ingest[Airflow ingestion and quality checks]
+    Ingest --> S3Raw[S3 raw historical data]
+    S3Raw --> Glue[AWS Glue / Spark]
+    Glue --> Iceberg[Iceberg tables on S3 / Glue Catalog]
+    Iceberg --> External[Snowflake external tables]
+    External --> DBT[dbt staging, intermediate, and marts]
+    DBT --> Grafana
 ```
 
-### Components
-#### 1. Data Sources
-- ESPN API for live game statistics
-- The Odds API for real-time betting odds
-- OpenWeather API for venue weather conditions
-#### 2. Message Queue (Kafka)
-- KRaft mode for better performance and reliability
-- Dedicated topics per sport and data type
-- S3 sink connector for data persistence
-#### 3. Stream Processing (Spark)
-- Structured Streaming for real-time analytics
-- Window-based aggregations (3-20 minutes)
-- Custom processors for games, odds, and weather
-#### 4. Analytics Storage (Druid)
-- Sub-second query performance
-- Multi-dimensional analytics support
-- Native Kafka integration
-- Historical data management
-#### 5. Visualization (Grafana)
-- Real-time dashboards
-- Custom metrics and alerts
-- Historical trend analysis
-### Data Flow
-- APIs publish data to respective Kafka topics
-- Spark Streaming processes and enriches data
-- Druid ingests processed data for analytics
-- Grafana visualizes metrics in real-time
-### Key Features
-- Low-latency data processing (<1 second)
-- Fault-tolerant architecture
-- Scalable data ingestion
-- Historical data persistence
-- Real-time analytics and visualization
+Airflow's `sports_betting_pipeline` controller coordinates the historical path. The live entry points run independently. The diagram includes services that must be provisioned outside the Python package.
 
-This pipeline enables comprehensive sports analytics with real-time insights for game analysis, odds movement tracking, and weather impact assessment.
+## Repository layout
 
-## 2. Batch pipeline
-```mermaid
-%%{init: {
-  'theme': 'base',
-  'themeVariables': {
-    'fontSize': '16px',
-    'fontWeight': 'bold',
-    'primaryTextColor': '#000000',
-    'primaryColor': '#e1f5fe',
-    'primaryBorderColor': '#01579b',
-    'fontFamily': 'arial'
-  }
-}}%%
-graph LR
-    classDef source fill:#e6f3ff,stroke:#3498db
-    classDef processing fill:#e6ffe6,stroke:#2ecc71
-    classDef storage fill:#fff0e6,stroke:#e67e22
-    classDef analytics fill:#ffe6e6,stroke:#e74c3c
-    classDef quality fill:#f5f5f5,stroke:#7f8c8d
+| Path | Purpose |
+| --- | --- |
+| [`src/betflow/api_connectors/`](src/betflow/api_connectors/) | Game, odds, weather, and news API clients and raw game transformations |
+| [`src/betflow/kafka_orch/`](src/betflow/kafka_orch/) | Kafka administration, producers, schemas, retries, and monitoring |
+| [`src/betflow/spark_streaming/`](src/betflow/spark_streaming/) | Streaming processors, transformers, configuration, and writer modules |
+| [`src/betflow/historical/`](src/betflow/historical/) | Historical connectors, configuration, DAG utilities, and Glue jobs |
+| [`src/pipeline_mains/`](src/pipeline_mains/) | Live pipeline launchers and verification scripts |
+| [`dags/`](dags/) | Airflow controller, ingestion, processing, and warehouse DAGs |
+| [`dbt/`](dbt/) | Snowflake models, macros, source definitions, and data tests |
+| [`snowflake/`](snowflake/) | Database, storage integration, external stage/table, and Snowpipe SQL |
+| [`src/druid_specs/`](src/druid_specs/) | Kafka ingestion specifications for NBA, NHL, and college football games |
+| [`src/grafana_viz_queries/`](src/grafana_viz_queries/) | Dashboard SQL examples |
+| [`src/tests/`](src/tests/) | Connector, Kafka, transformer, and processor tests |
+| [`setups/`](setups/) | Service installation and deployment notes |
+| [`images/`](images/) | Dashboard and infrastructure screenshots |
 
-    %% Batch Pipeline
-    A[Historical APIs] -->|Ingest| B[Airflow DAGs]
-    B -->|Raw Data| C[raw-s3/historical]
-    C -->|Transform| D[AWS Glue]
-    D -->|Process| E[Iceberg Tables]
-    E -->|Load| F[Snowflake Gold]
-    F -->|Model| G[dbt]
-    G -->|Visualize| H[Grafana Batch]
+## Prerequisites
 
-    E -->|Catalog| I[Glue Catalog]
-    E -->|Store| J[cur-s3/processed]
+Requirements depend on which pipeline you run:
 
-    A:::source
-    B & D:::processing
-    C & J:::storage
-    F & G:::analytics
-    H:::analytics
-    I:::quality
+| Component | Required for |
+| --- | --- |
+| Python | Package metadata declares Python **3.11+**; CI targets 3.11 |
+| Java and Spark | Live streaming; launchers request Spark Kafka connector **3.5.3** for Scala **2.12** |
+| Kafka | Live input and analytics topics; launchers use `localhost:9092` |
+| API credentials | Live odds, historical odds, and OpenWeather requests |
+| AWS credentials, S3, IAM, Glue | Historical ingestion and batch processing |
+| Airflow | Historical orchestration; dependency metadata specifies `>=2.10.1` |
+| Snowflake and dbt | Warehouse loading and analytical models |
+| Druid and Grafana | Live query serving and dashboards |
+
+The deployment notes and paths assume Linux/Ubuntu. Use a Linux environment, such as WSL2 on Windows, for those instructions. The live scripts configure an 8 GB Spark driver, so allow sufficient memory when running multiple pipelines.
+
+## Installation
+
+From the repository root, create and activate a virtual environment:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
-### Components
-#### 1. Data Ingestion Layer
-- Raw data collection from multiple sports APIs
-- Storage in S3 raw bucket (raw-s3/historical/)
-- Organized by sport type and data category (games, odds)
-#### 2. Processing Layer
-- AWS Glue for ETL processing
-- Transformation from raw JSON to structured formats
-- Implementation of Iceberg tables for data management
-- Storage in processed bucket (cur-s3/processed/)
-#### 3. Analytics Layer*
-- Snowflake integration for analytics processing
-- dbt models for data transformation
-- Bronze → Silver → Gold layer progression
-- Comprehensive data quality checks
+For a native PowerShell environment, activate with `.\.venv\Scripts\Activate.ps1` instead.
 
-### Data Flow
-#### 1. Raw Data Collection
-- Historical game data ingestion
-- Odds data processing
-- Structured storage in S3
-#### 2. Data Processing
-- Raw JSON transformation
-- Schema validation and enforcement
-- Data quality checks
-- Iceberg table management
-#### 3. Analytics Processing*
-- Snowflake external tables
-- dbt transformations
-- Business logic implementation
-- Analytics-ready views
+Some imported dependencies are missing from `pyproject.toml`. Install these additional libraries for the API clients and pipeline scripts:
 
-### Key Features
-- Data Organization: Multi-layer storage strategy (Bronze/Silver/Gold)
-- Quality Control: Comprehensive data validation
-- Scalability: Efficient handling of multiple sports data
-- Analytics Ready: Structured for complex analysis
-- Maintainable: Clear separation of concerns
+```bash
+python -m pip install requests python-dotenv aiohttp
+```
 
-[//]: # (```mermaid)
+Installation provides the Python package; it does not provision Kafka, Spark's Java runtime, Airflow, or cloud resources. Dependencies have broad lower bounds and there is no lockfile. The code uses Airflow 2-era APIs, so verify compatibility before upgrading major dependency versions.
 
-[//]: # (graph TB)
+### API and AWS configuration
 
-[//]: # (    subgraph "Data Sources")
+Create a `my.env` file in the repository root with the variables needed by your selected pipelines:
 
-[//]: # (        A[Iceberg Tables] -->|Load| B[Snowflake External Tables])
+```dotenv
+# Live odds launcher
+ODDS_FREE_API_KEY=your_live_odds_api_key
 
-[//]: # (    end)
+# Historical odds ingestion
+ODDS_API_KEY=your_historical_odds_api_key
 
-[//]: # (    )
-[//]: # (    subgraph "dbt Transformations")
+# Outdoor venue weather
+OPEN_WEATHER_API_KEY=your_openweather_api_key
 
-[//]: # (        B -->|Transform| C[Base Models])
+# Historical Glue processing
+GLUE_ROLE=arn:aws:iam::YOUR_ACCOUNT_ID:role/YOUR_GLUE_ROLE
+```
 
-[//]: # (        C -->|Aggregate| D[Intermediate Models])
+The live odds launcher reads `ODDS_FREE_API_KEY`; the historical odds path reads `ODDS_API_KEY`. Historical API access must be enabled for your credentials. ESPN scoreboard ingestion does not require an API key in the supplied implementation.
 
-[//]: # (        D -->|Business Logic| E[Gold Tables])
+The odds launcher searches for `my.env`, while the weather launcher loads it relative to the current directory. Run the individual launchers from the repository root as shown below. Keep credentials out of version control; `my.env` matches the repository's environment-file ignore rule.
 
-[//]: # (    end)
+For AWS operations, configure credentials through the usual boto3 credential chain, such as an AWS profile or instance role. The code contains `us-east-1` defaults and deployment-specific resource names that must be adapted before use.
 
-[//]: # (    )
-[//]: # (    subgraph "Analytics")
+## Run live pipelines
 
-[//]: # (        E -->|Query| F[BI Dashboards])
+Start Kafka first and make the input and output topics available. Each command below runs a long-lived pipeline; use a separate terminal for each, with the virtual environment activated and the repository root as the working directory.
 
-[//]: # (        E -->|Analysis| G[ML Models])
+```bash
+python src/pipeline_mains/games_pipeline.py
+```
 
-[//]: # (    end)
+```bash
+python src/pipeline_mains/odds_pipeline.py
+```
 
-[//]: # (```)
+```bash
+python src/pipeline_mains/weather_pipeline.py
+```
 
-## Analytics Overview*
+| Pipeline | Leagues | Kafka input | Kafka output |
+| --- | --- | --- | --- |
+| Games | `nba`, `nfl`, `nhl`, `cfb` | `<league>.game.live` | `<league>_games_analytics` |
+| Odds | `nba`, `nfl`, `nhl`, `cfb` | `<league>.odds.live` | `<league>_odds_analytics` |
+| Weather | `nfl`, `cfb` | `<league>.weather.current` | `<league>_weather_analytics` |
 
-### Data Analysis Patterns
-#### 1. Game Analytics
-- Score progression tracking
-- Team performance metrics
-- Home vs Away performance analysis
-- Season-over-season comparisons
-- Quarter-by-quarter analysis
-#### 2. Odds Analytics
-- Line movement tracking
-- Market efficiency metrics
-- Bookmaker comparison analysis
-- Opening vs Closing line analysis
-- Volume-weighted average prices
-- Odds volatility patterns
-#### 3. Cross-Data Analytics
-- Weather impact correlations
-- News sentiment effects
-- Performance-weather patterns
-- Multifactor analysis
+College football uses `college-football` for ESPN requests, `americanfootball_ncaaf` for The Odds API, and `cfb` in topic names. The generic `sports.*` topics in `create_default_topics()` differ from the league-specific topics used by these launchers.
 
-### Analytical Patterns
-#### 1. SCD (Slowly Changing Dimensions)
-- Team information tracking
-- Venue details management
-- Player roster changes
-- League structure changes
-#### 2. CDC (Change Data Capture)
-- Odds movements tracking
-- Score updates monitoring
-- Weather condition changes
-- Real-time market shifts
-#### 3. Growth Accounting
-- Performance metrics evolution
-- Market efficiency trends
-- Betting volume patterns
-- Season-by-season comparisons
+The games loop polls approximately every minute. Odds polling varies from 10 to 30 minutes based on game timing. Weather polling occurs approximately every 15 minutes for eligible outdoor venues. Pipelines can return or stop when no relevant games are available; missing weather for indoor games is expected.
 
---- 
+**Checkpoint behavior:** All three launchers delete their respective `/tmp/checkpoint/games`, `/tmp/checkpoint/odds`, or `/tmp/checkpoint/weather` directory when started. Change that behavior before relying on persistent state or restart recovery.
 
-## What Makes Betflow Different
-- **True Real-time Processing**: Leverages Apache Kafka and Spark Streaming for sub-second latency in odds movement analysis and game statistics
-- **Dual Pipeline Architecture**: Separate real-time and batch pipelines optimized for their specific use cases
-- **Advanced Analytics**: Combines game statistics, odds movements, weather impacts, and news sentiment for comprehensive betting insights
-- **Cost-effective Design**: Hybrid storage strategy using Apache Druid for real-time analytics and Snowflake for historical analysis
-- **Scalable Architecture**: Cloud-native design supporting multiple sports (NFL, NBA, NHL, NCAAF) and data sources
+An additional `main_pipeline.py` supervisor launches all three scripts using relative filenames. It expects `src/pipeline_mains/` as its working directory; ensure weather credentials are available there or exported into its environment. The individual commands above are easier to configure independently.
 
-[//]: # (### Challenges)
+To inspect an output topic, run Kafka's consumer from your Kafka installation:
 
-[//]: # (Where do I start!!!  )
+```bash
+bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic nba_games_analytics --from-beginning
+```
 
-[//]: # (Everything about this project was challenging. When I was in planning phase I gave proposal to AI and )
+Configure Druid ingestion using the [included specifications](src/druid_specs/) and the [Druid setup notes](setups/druid.md). Specifications are supplied for NBA, NHL, and college football game analytics; additional streams need corresponding ingestion configuration. Grafana queries are in [`src/grafana_viz_queries/`](src/grafana_viz_queries/).
 
-[//]: # (asked the time and cost of this project. Guess what response I received, 3 months &#40;6 hrs/day&#41; and USD 600/month. According to the)
+## Historical pipelines and warehouse setup
 
-[//]: # (same AI my current progress of one month is equivalent to 2 months. If we keep the challenges aside learning curve)
+1. Configure the raw and processed S3 buckets, Glue Data Catalog, IAM role, and AWS access. Update bucket names and date ranges in [`historical_config.py`](src/betflow/historical/config/historical_config.py) and [`processing_config.py`](src/betflow/historical/config/processing_config.py). Update the absolute Glue script paths in `ProcessingConfig.SCRIPT_PATHS` to your checkout location.
+2. Install Betflow in the Airflow execution environment and deploy the files in `dags/` to its DAG directory. The warehouse DAG also requires `astronomer-cosmos` and `apache-airflow-providers-snowflake`, which are not declared in the package metadata. Choose versions compatible with your Airflow installation and the operators imported by the DAGs.
+3. Set the Airflow variable `LOGS_BUCKET` to your Glue script/log bucket and configure the `snowflake_conn` connection. Provide `GLUE_ROLE` and historical odds credentials to the task environment.
+4. Configure Snowflake using the [setup guide](setups/snowflake.md) and [SQL scripts](snowflake/). Adapt account-specific integration details, S3 paths, and permissions; create the database, storage integration, stages/file format, and external tables before running warehouse transformations.
+5. Configure dbt as described below. Update the absolute project and profile paths in [`snowflake_dbt_staging_marts.py`](dags/snowflake_dbt_staging_marts.py).
+6. Review dates and catchup settings, then enable or manually trigger `sports_betting_pipeline` in Airflow.
 
-[//]: # (is what motivated me. This is my first project with real-time architecture. Never used Kafka, spark streaming, )
+The controller runs this dependency chain:
 
-[//]: # (druid, dbt, snowflake, grafana before this. I was recommended by people to use services such as confluent, but)
+```text
+sports_ingestion_dqc ──┬──> sports_batch_processing ──┐
+                      └──> odds_ingestion_dqc        ├──> snowflake_dbt_staging_marts
+                                └──> odds_batch_processing ──┘
+```
 
-[//]: # (I chose the DevOps path of setting infrastructure manually. My thought process, for the first time I should try to do everything from ground zero.)
+Game ingestion supplies the game data used by odds ingestion. Batch jobs process historical JSON into Iceberg tables on S3. The warehouse DAG waits for both batch DAGs, refreshes Snowflake external tables, and runs selected dbt models with their dependencies through Cosmos.
 
-[//]: # (I survived it, there is lot more to tell, but I would like to leave something for my articles too.)
+The parent DAG is scheduled daily, starts on **December 9, 2024**, and enables catchup. The warehouse DAG starts on **December 16, 2024**. Align these dates and choose the intended backfill range before enabling the controller. Configuration files also contain fixed 2024 date ranges.
 
-[//]: # ()
-[//]: # (*Here I am :&#41;*)
+See [`dags/README.md`](dags/README.md) for additional pipeline diagrams.
 
----
+### dbt
 
-> ### Ongoing and upcoming implementations
-> 1. dbt models, gold layer, and business logic implementation
-> 2. Batch grafana dashboard
-> 3. Unit and integration tests and corresponding workflows
-> 4. Ruff linting and type checking and corresponding workflows
-> 5. CI/CD for package `Betflow` and corresponding docs
-> 6. Asynchronous Kafka orchestrator, one producer for all 
-> 7. Weather component in batch pipeline
-> 8. Processing DAGs and analytics for data published by Kafka streams
-> 9. News component in real-time and batch pipeline
-> 10. Series of medium articles (as couple articles won't suffice for this project)
+The dbt project lives in `dbt/` and uses a profile named `betflow`. Install its separate requirements in an appropriate dbt environment:
 
+```bash
+python -m pip install -r dbt/dbt-requirements.txt
+```
 
-> NOTE: (*) means in progress. 
+The requirements file pins a dbt Core prerelease and a Snowflake adapter version; validate their compatibility in your environment. Create `~/.dbt/profiles.yml` with a `betflow` profile and `dev` target, supplying your Snowflake account, authentication, role, warehouse, database, and base schema. See the [profile example](setups/dbt.md), and use `SPORTS_DB` unless you also update the source definitions and SQL.
+
+From the repository root:
+
+```bash
+cd dbt
+dbt deps
+dbt debug
+dbt build
+```
+
+The models are organized into three layers:
+
+- `models/staging/`: Normalize games and odds for all four leagues.
+- `models/int/`: Derive game statistics, leaders, team performance, bookmaker comparisons, odds movement, and market efficiency.
+- `models/marts/`: Publish core dimensions/facts and analytical facts, including betting value, scoring patterns, team trends, record matchups, and overtime analysis.
+
+The project configures incremental materializations and schema suffixes `staging`, `int_layer`, `mart_core`, and `mart_analytics`. Source definitions reference external tables in `SPORTS_DB.RAW_LAYER`. dbt tests include schema checks and custom SQL checks for odds, market metrics, records, leaders, and scoring periods.
+
+## Development and testing
+
+Install test tools separately:
+
+```bash
+python -m pip install pytest pytest-asyncio pytest-cov mockafka-py
+python -m pytest src/tests -v
+```
+
+Tests cover API connectors, Kafka configuration and handlers, and Spark transformations/processors. Spark tests require Java and may download Maven artifacts. Some tests reference an older interface, including `GamesProcessor`, which is no longer exported by the processor package. The shared fixture file is named `conftests.py`, so pytest does not automatically discover it as `conftest.py`. Expect these issues to need repair before treating a full test run as a passing baseline.
+
+GitHub Actions includes pytest, Ruff, and mypy workflows. The pytest workflow currently installs a root `requirements.txt` that is absent from this checkout. Terraform workflows also reference a `terraform/` directory that is not included. These workflows need updates before they can validate or provision this checkout reliably.
+
+## Deployment notes and limitations
+
+- Kafka addresses, Spark ports, checkpoint locations, AWS regions, bucket names, and `/home/ubuntu/...` paths are embedded in several files. Review them for your environment.
+- The Dockerfile uses an Astronomer runtime, copies `my.env` into the image, and clones the original upstream repository's `dev` branch. It does not build the current local checkout or provide the complete service stack. Adapt it before deployment and supply credentials at runtime.
+- Both `kafka-python` and `kafka-python-ng` are declared dependencies and provide the `kafka` namespace. Resolve the intended client distribution if installation or import conflicts occur.
+- Python support is declared as 3.11+, but some Glue utilities use nested same-quote f-string expressions that require Python 3.12 syntax. Review those expressions when targeting Python 3.11 or the configured Glue 4.0 runtime.
+- News sentiment, weather impact warehouse models, and predictive modeling are mentioned in older documentation; the checked-in dbt models focus on games and odds. Consult the actual model files for implemented analytics.
+
+## Documentation and screenshots
+
+- [Infrastructure overview](setups/README.md)
+- [Kafka and S3 sink](setups/kafka.md)
+- [Airflow](setups/airflow.md)
+- [Druid](setups/druid.md)
+- [Snowflake](setups/snowflake.md) and [additional SQL setup notes](snowflake/setup.md)
+- [dbt setup](setups/dbt.md) and [model overview](dbt/README.md)
+- [Grafana](setups/grafana.md)
+- [Demo screenshots](demo.md)
+- [Earlier usage notes](usage.md)
+
+The setup documents contain deployment-specific examples; use the current source files for exact paths, topic names, and environment variable names.
+
+![Example NBA live analytics dashboard](images/nba_real_time.png)
+
+Additional NFL, NHL, Druid, and Airflow screenshots are available in [the demo](demo.md).
+
+## License
+
+Licensed under the [MIT License](LICENSE). Copyright (c) 2024 Sanchit Vijay.
